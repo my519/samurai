@@ -39,6 +39,10 @@ class SAM2VideoPredictor(SAM2Base):
         self.clear_non_cond_mem_around_input = clear_non_cond_mem_around_input
         self.clear_non_cond_mem_for_multi_obj = clear_non_cond_mem_for_multi_obj
         self.add_all_frames_to_correct_as_cond = add_all_frames_to_correct_as_cond
+        # ����Ƿ�ʹ��Intel GPU
+        if self.device.type == "xpu":
+            import intel_extension_for_pytorch as ipex
+            self.model = ipex.optimize(self.model)
 
     @torch.inference_mode()
     def init_state(
@@ -50,18 +54,16 @@ class SAM2VideoPredictor(SAM2Base):
     ):
         """Initialize an inference state."""
         compute_device = self.device  # device of the model
-        images, video_height, video_width = load_video_frames(
+        video_loader, video_height, video_width = load_video_frames(
             video_path=video_path,
             image_size=self.image_size,
             offload_video_to_cpu=offload_video_to_cpu,
-            async_loading_frames=async_loading_frames,
             compute_device=compute_device,
         )
+        
         inference_state = {}
-        inference_state["images"] = images
-        inference_state["num_frames"] = len(images)
-        # whether to offload the video frames to CPU memory
-        # turning on this option saves the GPU memory with only a very small overhead
+        inference_state["video_loader"] = video_loader
+        inference_state["num_frames"] = len(video_loader)
         inference_state["offload_video_to_cpu"] = offload_video_to_cpu
         # whether to offload the inference state to CPU memory
         # turning on this option saves the GPU memory at the cost of a lower tracking fps
@@ -877,15 +879,17 @@ class SAM2VideoPredictor(SAM2Base):
         inference_state["frames_already_tracked"].clear()
 
     def _get_image_feature(self, inference_state, frame_idx, batch_size):
-        """Compute the image features on a given frame."""
-        # Look up in the cache first
-        image, backbone_out = inference_state["cached_features"].get(
-            frame_idx, (None, None)
-        )
+        image, backbone_out = inference_state["cached_features"].get(frame_idx, (None, None))
         if backbone_out is None:
-            # Cache miss -- we will run inference on a single image
             device = inference_state["device"]
-            image = inference_state["images"][frame_idx].to(device).float().unsqueeze(0)
+            video_loader = inference_state["video_loader"]
+            video_loader.reset()  # ���õ���Ƶ��ʼ
+            for _ in range(frame_idx):
+                video_loader.read_frame()  # ����֮ǰ��֡
+            image = video_loader.read_frame()
+            if image is None:
+                raise ValueError(f"Failed to read frame {frame_idx}")
+            image = image.to(device)
             backbone_out = self.forward_image(image)
             # Cache the most recent frame's feature (for repeated interactions with
             # a frame; we can use an LRU cache for more frames in the future).

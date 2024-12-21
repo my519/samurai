@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+import cv2
 
 
 def get_sdpa_settings():
@@ -277,36 +278,78 @@ def load_video_frames_from_jpg_images(
     return images, video_height, video_width
 
 
+def get_compute_device(compute_device=None):
+    if compute_device is not None:
+        return compute_device
+        
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    try:
+        import intel_extension_for_pytorch as ipex
+        if torch.xpu.is_available():
+            return torch.device("xpu")
+    except ImportError:
+        pass
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+class VideoStreamLoader:
+    """��ʽ��Ƶ������"""
+    def __init__(self, video_path, image_size, img_mean=(0.485, 0.456, 0.406), img_std=(0.229, 0.224, 0.225)):
+        self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            raise ValueError(f"Failed to open video file: {video_path}")
+        
+        self.image_size = image_size
+        self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.video_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        self.img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+        self.img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+        
+    def __len__(self):
+        return self.total_frames
+    
+    def read_frame(self):
+        """��ȡ��֡"""
+        ret, frame = self.cap.read()
+        if not ret:
+            return None
+            
+        # ����ͼ���С
+        frame = cv2.resize(frame, (self.image_size, self.image_size))
+        
+        # BGR to RGB
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = torch.from_numpy(frame).permute(2, 0, 1)
+        frame = frame.float() / 255.0
+        
+        # ��׼��
+        frame = (frame - self.img_mean) / self.img_std
+        return frame.unsqueeze(0)  # ��������ά��
+        
+    def reset(self):
+        """���õ���Ƶ��ʼ"""
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        
+    def __del__(self):
+        if hasattr(self, 'cap'):
+            self.cap.release()
+
 def load_video_frames_from_video_file(
     video_path,
     image_size,
     offload_video_to_cpu,
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
-    compute_device=torch.device("cuda"),
+    compute_device=None,
 ):
-    """Load the video frames from a video file."""
-    import decord
-
-    img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
-    img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
-    # Get the original video height and width
-    decord.bridge.set_bridge("torch")
-    video_height, video_width, _ = decord.VideoReader(video_path).next().shape
-    # Iterate over all frames in the video
-    images = []
-    for frame in decord.VideoReader(video_path, width=image_size, height=image_size):
-        images.append(frame.permute(2, 0, 1))
-
-    images = torch.stack(images, dim=0).float() / 255.0
-    if not offload_video_to_cpu:
-        images = images.to(compute_device)
-        img_mean = img_mean.to(compute_device)
-        img_std = img_std.to(compute_device)
-    # normalize by mean and std
-    images -= img_mean
-    images /= img_std
-    return images, video_height, video_width
+    """ʹ����ʽ������������Ƶ"""
+    loader = VideoStreamLoader(video_path, image_size, img_mean, img_std)
+    return loader, loader.video_height, loader.video_width
 
 
 def fill_holes_in_mask_scores(mask, max_area):
