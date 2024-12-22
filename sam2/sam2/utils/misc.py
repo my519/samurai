@@ -315,16 +315,11 @@ class VideoStreamLoader:
     def read_frame(self):
         """读取下一帧"""
         try:
-            if self.current_frame >= len(self.img_paths):
-                print(f"已到达序列末尾: current_frame={self.current_frame}")
+            if self.current_frame >= self.total_frames:
                 return None
             
-            img_path = self.img_paths[self.current_frame]
-            print(f"读取图片: {img_path}")  # 添加调试信息
-            
-            frame = cv2.imread(img_path)
-            if frame is None:
-                print(f"无法读取图片: {img_path}")
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
                 return None
             
             # 转换为RGB并调整大小
@@ -335,16 +330,11 @@ class VideoStreamLoader:
             frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
             frame = (frame - self.img_mean) / self.img_std
             
-            if not self.offload_video_to_cpu:
-                frame = frame.to(self.compute_device)
-            
             self.current_frame += 1
             return frame.unsqueeze(0)
             
         except Exception as e:
-            print(f"处理图片时出错: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            print(f"处理视频帧时出错: {str(e)}")
             return None
         
     def reset(self):
