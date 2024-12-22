@@ -8,6 +8,8 @@ import warnings
 from collections import OrderedDict
 
 import torch
+import numpy as np
+import cv2
 
 from tqdm import tqdm
 
@@ -39,7 +41,7 @@ class SAM2VideoPredictor(SAM2Base):
         self.clear_non_cond_mem_around_input = clear_non_cond_mem_around_input
         self.clear_non_cond_mem_for_multi_obj = clear_non_cond_mem_for_multi_obj
         self.add_all_frames_to_correct_as_cond = add_all_frames_to_correct_as_cond
-        # ����Ƿ�ʹ��Intel GPU
+        # 是否使用Intel GPU
         if self.device.type == "xpu":
             import intel_extension_for_pytorch as ipex
             self.model = ipex.optimize(self.model)
@@ -141,6 +143,8 @@ class SAM2VideoPredictor(SAM2Base):
         if allow_new_object:
             # get the next object slot
             obj_idx = len(inference_state["obj_id_to_idx"])
+            
+            # 初始化新对象的数据结构
             inference_state["obj_id_to_idx"][obj_id] = obj_idx
             inference_state["obj_idx_to_id"][obj_idx] = obj_id
             inference_state["obj_ids"] = list(inference_state["obj_id_to_idx"])
@@ -155,6 +159,7 @@ class SAM2VideoPredictor(SAM2Base):
                 "cond_frame_outputs": {},  # dict containing {frame_idx: <out>}
                 "non_cond_frame_outputs": {},  # dict containing {frame_idx: <out>}
             }
+            
             return obj_idx
         else:
             raise RuntimeError(
@@ -1176,3 +1181,40 @@ class SAM2VideoPredictor(SAM2Base):
             non_cond_frame_outputs.pop(t, None)
             for obj_output_dict in inference_state["output_dict_per_obj"].values():
                 obj_output_dict["non_cond_frame_outputs"].pop(t, None)
+
+    def show_masks(self, frame, pred_masks, scores=None, title=""):
+        """显示预测的掩码"""
+        # 将掩码叠加到图像上
+        masked_frame = frame.copy()
+        overlay = np.zeros_like(frame)
+        
+        # 如果有多个掩码，选择得分最高的
+        if len(pred_masks.shape) == 3:
+            if scores is not None:
+                best_idx = scores.argmax()
+                pred_masks = pred_masks[best_idx:best_idx+1]
+            else:
+                pred_masks = pred_masks[0:1]
+        
+        # 为每个掩码生成随机颜色
+        for mask in pred_masks:
+            color = np.random.rand(3) * 255
+            overlay[mask > 0.5] = color
+        
+        # 将掩码叠加到原图上
+        masked_frame = cv2.addWeighted(masked_frame, 0.7, overlay.astype(np.uint8), 0.3, 0)
+        
+        # 水平拼接掩码图像和结果图像
+        combined_img = cv2.hconcat([overlay.astype(np.uint8), masked_frame])
+        
+        # 显示拼接后的图像
+        cv2.imshow(title, combined_img)
+        cv2.waitKey(1)
+
+    def visualize_results(self, frame, pred_masks, scores=None):
+        """可视化结果"""
+        if not self.show_visualization:
+            return
+        
+        # 在一个窗口中显示拼接的图像
+        self.show_masks(frame, pred_masks, scores, title="Prediction Results")

@@ -121,53 +121,51 @@ class AsyncVideoFrameLoader:
         self.offload_video_to_cpu = offload_video_to_cpu
         self.img_mean = img_mean
         self.img_std = img_std
-        # items in `self.images` will be loaded asynchronously
-        self.images = [None] * len(img_paths)
-        # catch and raise any exceptions in the async loading thread
-        self.exception = None
-        # video_height and video_width be filled when loading the first image
-        self.video_height = None
-        self.video_width = None
         self.compute_device = compute_device
-
-        # load the first frame to fill video_height and video_width and also
-        # to cache it (since it's most likely where the user will click)
-        self.__getitem__(0)
-
-        # load the rest of frames asynchronously without blocking the session start
-        def _load_frames():
-            try:
-                for n in tqdm(range(len(self.images)), desc="frame loading (JPEG)"):
-                    self.__getitem__(n)
-            except Exception as e:
-                self.exception = e
-
-        self.thread = Thread(target=_load_frames, daemon=True)
-        self.thread.start()
-
-    def __getitem__(self, index):
-        if self.exception is not None:
-            raise RuntimeError("Failure in frame loading thread") from self.exception
-
-        img = self.images[index]
-        if img is not None:
-            return img
-
-        img, video_height, video_width = _load_img_as_tensor(
-            self.img_paths[index], self.image_size
-        )
-        self.video_height = video_height
-        self.video_width = video_width
-        # normalize by mean and std
-        img -= self.img_mean
-        img /= self.img_std
-        if not self.offload_video_to_cpu:
-            img = img.to(self.compute_device, non_blocking=True)
-        # self.images[index] = img
-        return img
-
+        self.current_frame = 0
+        
+        # 读取第一帧获取视频尺寸信息
+        first_frame = cv2.imread(img_paths[0])
+        if first_frame is None:
+            raise ValueError(f"无法读取图片: {img_paths[0]}")
+        self.video_height, self.video_width = first_frame.shape[:2]
+        
     def __len__(self):
-        return len(self.images)
+        return len(self.img_paths)
+        
+    def read_frame(self):
+        """读取下一帧"""
+        if self.current_frame >= len(self.img_paths):
+            return None
+            
+        try:
+            img_path = self.img_paths[self.current_frame]
+            frame = cv2.imread(img_path)
+            if frame is None:
+                print(f"无法读取图片: {img_path}")
+                return None
+                
+            # 转换为RGB并调整大小
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, (self.image_size, self.image_size))
+            
+            # 转换为tensor并标准化
+            frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+            frame = (frame - self.img_mean) / self.img_std
+            
+            if not self.offload_video_to_cpu:
+                frame = frame.to(self.compute_device)
+            
+            self.current_frame += 1
+            return frame.unsqueeze(0)
+            
+        except Exception as e:
+            print(f"处理图片时出错: {str(e)}")
+            return None
+            
+    def reset(self):
+        """重置到开始位置"""
+        self.current_frame = 0
 
 
 def load_video_frames(
@@ -220,62 +218,37 @@ def load_video_frames_from_jpg_images(
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
 ):
-    """
-    Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
-
-    The frames are resized to image_size x image_size and are loaded to GPU if
-    `offload_video_to_cpu` is `False` and to CPU if `offload_video_to_cpu` is `True`.
-
-    You can load a frame asynchronously by setting `async_loading_frames` to `True`.
-    """
-    if isinstance(video_path, str) and os.path.isdir(video_path):
-        jpg_folder = video_path
-    else:
+    """使用流式方式加载JPG序列"""
+    if not os.path.isdir(video_path):
         raise NotImplementedError(
-            "Only JPEG frames are supported at this moment. For video files, you may use "
-            "ffmpeg (https://ffmpeg.org/) to extract frames into a folder of JPEG files, such as \n"
-            "```\n"
-            "ffmpeg -i <your_video>.mp4 -q:v 2 -start_number 0 <output_dir>/'%05d.jpg'\n"
-            "```\n"
-            "where `-q:v` generates high-quality JPEG frames and `-start_number 0` asks "
-            "ffmpeg to start the JPEG file from 00000.jpg."
+            "输入路径必须是包含JPG序列的目录"
         )
 
+    # 获取所有JPG文件
     frame_names = [
         p
-        for p in os.listdir(jpg_folder)
-        if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
+        for p in os.listdir(video_path)
+        if p.lower().endswith(('.jpg', '.jpeg'))
     ]
-    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+    frame_names.sort()  # 确保按名称顺序
     num_frames = len(frame_names)
     if num_frames == 0:
-        raise RuntimeError(f"no images found in {jpg_folder}")
-    img_paths = [os.path.join(jpg_folder, frame_name) for frame_name in frame_names]
+        raise RuntimeError(f"在 {video_path} 中没有找到JPG文件")
+        
+    img_paths = [os.path.join(video_path, frame_name) for frame_name in frame_names]
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
 
-    if async_loading_frames:
-        lazy_images = AsyncVideoFrameLoader(
-            img_paths,
-            image_size,
-            offload_video_to_cpu,
-            img_mean,
-            img_std,
-            compute_device,
-        )
-        return lazy_images, lazy_images.video_height, lazy_images.video_width
-
-    images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
-    for n, img_path in enumerate(tqdm(img_paths, desc="frame loading (JPEG)")):
-        images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
-    if not offload_video_to_cpu:
-        images = images.to(compute_device)
-        img_mean = img_mean.to(compute_device)
-        img_std = img_std.to(compute_device)
-    # normalize by mean and std
-    images -= img_mean
-    images /= img_std
-    return images, video_height, video_width
+    # 使用流式加载器
+    lazy_images = AsyncVideoFrameLoader(
+        img_paths,
+        image_size,
+        offload_video_to_cpu,
+        img_mean,
+        img_std,
+        compute_device,
+    )
+    return lazy_images, lazy_images.video_height, lazy_images.video_width
 
 
 def get_compute_device(compute_device=None):
@@ -296,17 +269,43 @@ def get_compute_device(compute_device=None):
 
 
 class VideoStreamLoader:
-    """��ʽ��Ƶ������"""
+    """流式视频加载器"""
     def __init__(self, video_path, image_size, img_mean=(0.485, 0.456, 0.406), img_std=(0.229, 0.224, 0.225)):
-        self.cap = cv2.VideoCapture(video_path)
+        if isinstance(video_path, bytes):
+            import numpy as np
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as f:
+                f.write(video_path)
+                temp_path = f.name
+            self.cap = cv2.VideoCapture(temp_path)
+            os.unlink(temp_path)
+        else:
+            self.cap = cv2.VideoCapture(video_path)
+            self.video_path = video_path  # 保存路径以便重新打开
+            
         if not self.cap.isOpened():
-            raise ValueError(f"Failed to open video file: {video_path}")
+            raise ValueError(f"无法打开视频文件: {video_path}")
         
+        # 获取视频属性时添加错误检查
+        width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        frames = self.cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        
+        if width is None or height is None or frames is None:
+            raise ValueError("无法获取视频属性")
+            
+        self.video_width = int(width)
+        self.video_height = int(height)
+        self.total_frames = int(frames)
+        
+        self.current_frame = 0
+        
+        print(f"视频信息: 宽={self.video_width}, 高={self.video_height}, 总帧数={self.total_frames}")
+        
+        if self.total_frames <= 0:
+            raise ValueError("无法获取有效的视频帧数")
+            
         self.image_size = image_size
-        self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.video_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
         self.img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
         self.img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
         
@@ -314,30 +313,57 @@ class VideoStreamLoader:
         return self.total_frames
     
     def read_frame(self):
-        """��ȡ��֡"""
-        ret, frame = self.cap.read()
-        if not ret:
-            return None
+        """读取下一帧"""
+        try:
+            if self.current_frame >= len(self.img_paths):
+                print(f"已到达序列末尾: current_frame={self.current_frame}")
+                return None
             
-        # ����ͼ���С
-        frame = cv2.resize(frame, (self.image_size, self.image_size))
-        
-        # BGR to RGB
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = torch.from_numpy(frame).permute(2, 0, 1)
-        frame = frame.float() / 255.0
-        
-        # ��׼��
-        frame = (frame - self.img_mean) / self.img_std
-        return frame.unsqueeze(0)  # ��������ά��
+            img_path = self.img_paths[self.current_frame]
+            print(f"读取图片: {img_path}")  # 添加调试信息
+            
+            frame = cv2.imread(img_path)
+            if frame is None:
+                print(f"无法读取图片: {img_path}")
+                return None
+            
+            # 转换为RGB并调整大小
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, (self.image_size, self.image_size))
+            
+            # 转换为tensor并标准化
+            frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+            frame = (frame - self.img_mean) / self.img_std
+            
+            if not self.offload_video_to_cpu:
+                frame = frame.to(self.compute_device)
+            
+            self.current_frame += 1
+            return frame.unsqueeze(0)
+            
+        except Exception as e:
+            print(f"处理图片时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
         
     def reset(self):
-        """���õ���Ƶ��ʼ"""
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        """重置到视频开始"""
+        #print(f"重置视频到开始位置 (当前帧={self.current_frame})")
+        self.current_frame = 0
+        success = self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        if not success:
+            print("重置视频位置失败")
+            # 尝试重新打开视频
+            self.cap.release()
+            self.cap = cv2.VideoCapture(self.video_path)
+            if not self.cap.isOpened():
+                print("重新打开视频失败")
         
     def __del__(self):
         if hasattr(self, 'cap'):
             self.cap.release()
+            print("释放视频资源")
 
 def load_video_frames_from_video_file(
     video_path,
@@ -347,9 +373,15 @@ def load_video_frames_from_video_file(
     img_std=(0.229, 0.224, 0.225),
     compute_device=None,
 ):
-    """ʹ����ʽ������������Ƶ"""
-    loader = VideoStreamLoader(video_path, image_size, img_mean, img_std)
-    return loader, loader.video_height, loader.video_width
+    """使用流式加载器加载视频"""
+    try:
+        loader = VideoStreamLoader(video_path, image_size, img_mean, img_std)
+        return loader, loader.video_height, loader.video_width
+    except Exception as e:
+        print(f"加载视频时发生错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 def fill_holes_in_mask_scores(mask, max_area):
