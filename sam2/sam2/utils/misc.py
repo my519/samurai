@@ -230,7 +230,8 @@ def load_video_frames_from_jpg_images(
         for p in os.listdir(video_path)
         if p.lower().endswith(('.jpg', '.jpeg'))
     ]
-    frame_names.sort()  # 确保按名称顺序
+    frame_names.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
+
     num_frames = len(frame_names)
     if num_frames == 0:
         raise RuntimeError(f"在 {video_path} 中没有找到JPG文件")

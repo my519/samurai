@@ -9,20 +9,39 @@ import sys
 sys.path.append("./sam2")
 from sam2.build_sam import build_sam2_video_predictor
 from tqdm import tqdm
+import traceback
 
 color = [(255, 0, 0)]
 
 def load_txt(gt_path):
-    with open(gt_path, 'r') as f:
-        gt = f.readlines()
     prompts = {}
-    for fid, line in enumerate(gt):
-        x, y, w, h = map(float, line.split(','))
-        x, y, w, h = int(x), int(y), int(w), int(h)
-        prompts[fid] = ((x, y, x + w, y + h), 0)
-        if fid == 0:
-            print(f"第一帧边界框: x={x}, y={y}, w={w}, h={h}")
+    try:
+        with open(gt_path, 'r') as f:
+            gt = f.readlines()
+        for fid, line in enumerate(gt):
+            x, y, w, h = map(float, line.split(','))
+            x, y, w, h = int(x), int(y), int(w), int(h)
+            prompts[fid] = ((x, y, x + w, y + h), 0)
+    except Exception as e:
+        pass
     return prompts
+
+def load_frame_box_video(video_path, frame_idx):
+    video_path = os.path.dirname(video_path)
+    txt_file_path = os.path.join(video_path, f"{frame_idx}.txt")
+    box = load_txt(txt_file_path)
+    if box:
+        print(f"加载帧{frame_idx}的边界框: {txt_file_path}:{box}")
+    return box
+
+def load_frame_box_jpeg(video_path, jpg_file):
+    video_path = os.path.dirname(video_path)
+    jpg_filename = os.path.splitext(jpg_file)[0]
+    txt_file_path = os.path.join(video_path, f"{jpg_filename}.txt")
+    box = load_txt(txt_file_path)
+    if box:
+        print(f"加载帧{jpg_file}的边界框: {txt_file_path}:{box}")
+    return box
 
 def determine_model_cfg(model_path):
     if "large" in model_path:
@@ -88,7 +107,6 @@ def main(args):
             if frames is None:
                 raise ValueError("无法获取视频总帧数")
                 
-            print(f"[demo.py:67] Converting total_frames={frames} to int")
             total_frames = int(frames)
             ret, first_frame = cap.read()
             if not ret:
@@ -102,10 +120,11 @@ def main(args):
             if not jpg_files:
                 raise ValueError(f"目录 {args.video_path} 中没有找到JPG文件")
             
-            jpg_files.sort()  # 确保按名称顺序
+            # 使用自然排序（数值排序），处理没有数字的情况
+            jpg_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
             total_frames = len(jpg_files)
             print(f"找到 {total_frames} 个JPG文件")
-            
+
             # 读取第一张图片获取尺寸信息
             first_frame = cv2.imread(os.path.join(args.video_path, jpg_files[0]))
             if first_frame is None:
@@ -116,7 +135,8 @@ def main(args):
             raise ValueError("输入路径必须是MP4视频文件或包含JPG序列的目录")
         
         # 加载提示信息
-        prompts = load_txt(args.txt_path)
+        #prompts = load_txt(args.txt_path)
+        prompts=load_frame_box_video(args.video_path,0)
 
         # 设置输出视频
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -147,10 +167,6 @@ def main(args):
             if is_video:
                 cap = cv2.VideoCapture(args.video_path)
             else:
-                # 对于JPG序列，我们需要准备文件列表
-                jpg_files = [f for f in os.listdir(args.video_path) 
-                            if f.lower().endswith(('.jpg', '.jpeg'))]
-                jpg_files.sort()
                 current_frame_idx = 0
                 
             for frame_idx, object_ids, masks in tqdm(
@@ -170,6 +186,65 @@ def main(args):
                         print(f"无法读取图片: {frame_path}")
                         break
                     current_frame_idx += 1
+
+                # 尝试读入与帧序号frame_idx同名的txt文件，作为提示信息
+                if frame_idx > 0:
+                    if is_video:
+                        prompts = load_frame_box_video(args.video_path, frame_idx)
+                    else:
+                        prompts = load_frame_box_jpeg(args.video_path, jpg_files[current_frame_idx])
+
+                    if prompts:
+                        try:
+                            print(f"重置第 {frame_idx} 帧的跟踪状态")
+                            
+                            # 保存当前设备信息
+                            current_device = device
+                            
+                            # 重置状态前先清理资源
+                            if 'state' in locals():
+                                del state
+                            torch.cuda.empty_cache()  # 清理GPU内存
+                            gc.collect()  # 清理CPU内存
+                            
+                            # 重新初始化状态
+                            state = predictor.init_state(
+                                args.video_path,
+                                offload_video_to_cpu=True,
+                                offload_state_to_cpu=True
+                            )
+                            
+                            # 添加新的边界框
+                            bbox, track_label = prompts[0]
+                            print(f"添加新的边界框: {bbox}")
+                            
+                            # 检查边界框的有效性
+                            x1, y1, x2, y2 = bbox
+                            if (x1 >= 0 and y1 >= 0 and x2 < width and y2 < height and 
+                                x2 > x1 and y2 > y1):
+                                # 添加新的边界框并获取掩码
+                                _, _, new_masks = predictor.add_new_points_or_box(
+                                    state, 
+                                    box=bbox, 
+                                    frame_idx=frame_idx, 
+                                    obj_id=0
+                                )
+                                
+                                # 检查掩码的有效性
+                                if new_masks is not None and len(new_masks) > 0:
+                                    print(f"更新第 {frame_idx} 帧的掩码")
+                                    masks = new_masks  # 更新当前掩码
+                                else:
+                                    print(f"警告: 第 {frame_idx} 帧未能生成有效掩码")
+                                    continue
+                            else:
+                                print(f"警告: 无效的边界框坐标: {bbox}")
+                                continue
+                                
+                        except Exception as e:
+                            print(f"重置跟踪状态时出错: {str(e)}")
+                            traceback.print_exc()  # 打印完整的错误堆栈
+                            continue
 
                 # 处理每个对象的mask
                 for obj_id, mask in zip(object_ids, masks):
@@ -217,7 +292,7 @@ def main(args):
                         
                         # 创建mask可视化
                         mask_vis = np.zeros((height, width, 3), dtype=np.uint8)
-                        mask_vis[mask] = (0, 255, 0)  # 绿色表示mask区域
+                        mask_vis[mask] = (0, 255, 0)  # 绿色表示mask域
 
                         # 检查数组形状和非空性
                         if (result[mask].size > 0 and mask_vis[mask].size > 0 and 
@@ -299,8 +374,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    #parser.add_argument("--video_path", default="D:/2024Work/14.AIVideo/6.Assets/6.Video/hero.jpg/", help="Input video path.")
     parser.add_argument("--video_path", required=True, help="Input video path.")
-    parser.add_argument("--txt_path", required=True, help="Path to ground truth text file.")
     parser.add_argument("--model_path", default="sam2/checkpoints/sam2.1_hiera_base_plus.pt")
     parser.add_argument("--video_output_path", default="demo.mp4")
     parser.add_argument("--save_to_video", default=True, type=bool)
