@@ -8,6 +8,7 @@ import gc
 import sys
 sys.path.append("./sam2")
 from sam2.build_sam import build_sam2_video_predictor
+from sam2.utils.misc import get_jpg_files
 from tqdm import tqdm
 import traceback
 
@@ -80,6 +81,37 @@ def get_device(force_cpu=False):
     print("使用CPU")
     return torch.device("cpu")
 
+def save_frame_image(frame, frame_idx, current_frame_idx, jpg_files, is_jpg_dir, video_output_dir):
+    """保存帧图像
+    
+    Args:
+        frame: 要保存的图像
+        frame_idx: 帧序号
+        current_frame_idx: 当前JPG文件索引
+        jpg_files: JPG文件列表
+        is_jpg_dir: 是否是JPG目录
+        video_output_dir: 输出目录
+        image_type: 图像类型（"foreground"/"mask"/"result"）
+    """
+    try:
+        if not os.path.exists(video_output_dir):
+            os.makedirs(video_output_dir)
+            
+        if is_jpg_dir:
+            # 获取当前处理的jpg文件名（不含扩展名）
+            current_jpg = jpg_files[current_frame_idx]
+            base_name = os.path.splitext(current_jpg)[0]
+            # 构建图像保存路径
+            image_path = os.path.join(video_output_dir, f"{base_name}.jpg")
+        else:
+            # 如果是视频输入，使用帧号作为文件名
+            image_path = os.path.join(video_output_dir, f"{frame_idx}.jpg")
+            
+        cv2.imwrite(image_path, frame)
+        
+    except Exception as e:
+        print(f"保存图像时出错: {str(e)}")
+
 def main(args):
     try:
         # 初始化模型
@@ -115,13 +147,7 @@ def main(args):
             cap.release()
         elif is_jpg_dir:
             # 获取JPG序列信息
-            jpg_files = [f for f in os.listdir(args.video_path) 
-                        if f.lower().endswith(('.jpg', '.jpeg'))]
-            if not jpg_files:
-                raise ValueError(f"目录 {args.video_path} 中没有找到JPG文件")
-            
-            # 使用自然排序（数值排序），处理没有数字的情况
-            jpg_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
+            jpg_files = get_jpg_files(args.video_path, args.video_output_path)
             total_frames = len(jpg_files)
             print(f"找到 {total_frames} 个JPG文件")
 
@@ -139,23 +165,30 @@ def main(args):
         prompts=load_frame_box_video(args.video_path,0)
 
         # 设置输出视频
+        video_output_dir = os.path.dirname(args.video_output_path)
+        if not os.path.exists(video_output_dir):
+            os.makedirs(video_output_dir)
+
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(args.video_output_path, fourcc, frame_rate, (width, height))
-
+        
         # 创建显示窗口
         cv2.namedWindow('Original', cv2.WINDOW_NORMAL)
         cv2.namedWindow('Mask', cv2.WINDOW_NORMAL)
         cv2.namedWindow('Result', cv2.WINDOW_NORMAL)
+        cv2.namedWindow('Foreground', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Original', int(width/2), int(height/2))
         cv2.resizeWindow('Mask', int(width/2), int(height/2))
         cv2.resizeWindow('Result', int(width/2), int(height/2))
+        cv2.resizeWindow('Foreground', int(width/2), int(height/2))
 
         with torch.inference_mode():
             print("初始化状态...")
             state = predictor.init_state(
                 args.video_path,
                 offload_video_to_cpu=True,
-                offload_state_to_cpu=True
+                offload_state_to_cpu=True,
+                video_output_path=args.video_output_path
             )
 
             print("添加第一帧的边界框...")
@@ -211,7 +244,8 @@ def main(args):
                             state = predictor.init_state(
                                 args.video_path,
                                 offload_video_to_cpu=True,
-                                offload_state_to_cpu=True
+                                offload_state_to_cpu=True,
+                                video_output_path=args.video_output_path
                             )
                             
                             # 添加新的边界框
@@ -255,7 +289,10 @@ def main(args):
                         
                         # 创建结果图像（默认使用原始图像）
                         result = frame.copy()
-
+                        
+                        # 创建前景图像（绿色背景）
+                        foreground = np.full_like(frame, (0, 255, 0))  # 绿色背景
+                        
                         # 处理按键
                         key = cv2.waitKey(1) & 0xFF
                         if key == ord('q'):  # 按q退出
@@ -285,14 +322,25 @@ def main(args):
                             cv2.imshow('Original', frame)
                             cv2.imshow('Mask', np.zeros_like(frame))  # 显示空mask
                             cv2.imshow('Result', result)
+                            cv2.imshow('Foreground', foreground)  # 显示前景图像
+
+                            # 保存前景图像
+                            save_frame_image(
+                                frame=foreground,
+                                frame_idx=frame_idx,
+                                current_frame_idx=current_frame_idx,
+                                jpg_files=jpg_files,
+                                is_jpg_dir=is_jpg_dir,
+                                video_output_dir=video_output_dir,
+                            )
                             
                             if args.save_to_video:
                                 out.write(result)
                             continue
                         
                         # 创建mask可视化
-                        mask_vis = np.zeros((height, width, 3), dtype=np.uint8)
-                        mask_vis[mask] = (0, 255, 0)  # 绿色表示mask域
+                        mask_vis = np.zeros_like(frame)
+                        mask_vis[mask] = (0, 255, 0)  # 绿色表示mask区域
 
                         # 检查数组形状和非空性
                         if (result[mask].size > 0 and mask_vis[mask].size > 0 and 
@@ -315,6 +363,7 @@ def main(args):
                             cv2.imshow('Original', frame)
                             cv2.imshow('Mask', np.zeros_like(frame))
                             cv2.imshow('Result', result)
+                            cv2.imshow('Foreground', foreground)  # 显示前景图像
                             
                             if args.save_to_video:
                                 out.write(result)
@@ -339,11 +388,25 @@ def main(args):
                         info_text = f'Frame: {frame_idx}'
                         cv2.putText(result, info_text, (10, 30), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        
+                        # 复制mask区域的原始图像
+                        np.copyto(foreground, frame, where=mask[:, :, None])  # 只复制mask区域的原始图像
 
                         # 显示图像
                         cv2.imshow('Original', frame)
                         cv2.imshow('Mask', mask_vis)
                         cv2.imshow('Result', result)
+                        cv2.imshow('Foreground', foreground)  # 显示前景图像
+                        
+                        # 保存前景图像
+                        save_frame_image(
+                            frame=foreground,
+                            frame_idx=frame_idx,
+                            current_frame_idx=current_frame_idx,
+                            jpg_files=jpg_files,
+                            is_jpg_dir=is_jpg_dir,
+                            video_output_dir=video_output_dir,
+                        )
 
                         # 保存结果
                         if args.save_to_video:
@@ -377,7 +440,7 @@ if __name__ == "__main__":
     #parser.add_argument("--video_path", default="D:/2024Work/14.AIVideo/6.Assets/6.Video/hero.jpg/", help="Input video path.")
     parser.add_argument("--video_path", required=True, help="Input video path.")
     parser.add_argument("--model_path", default="sam2/checkpoints/sam2.1_hiera_base_plus.pt")
-    parser.add_argument("--video_output_path", default="demo.mp4")
+    parser.add_argument("--video_output_path", default="./output/demo.mp4")
     parser.add_argument("--save_to_video", default=True, type=bool)
     parser.add_argument("--force_cpu", action="store_true", help="强制使用CPU运行，忽略GPU")
     args = parser.parse_args()

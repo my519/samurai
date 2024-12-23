@@ -176,6 +176,7 @@ def load_video_frames(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    video_output_path=None,
 ):
     """
     Load the video frames from video_path. The frames are resized to image_size as in
@@ -192,6 +193,7 @@ def load_video_frames(
             img_mean=img_mean,
             img_std=img_std,
             compute_device=compute_device,
+            video_output_path=video_output_path,
         )
     elif is_str and os.path.isdir(video_path):
         return load_video_frames_from_jpg_images(
@@ -202,6 +204,7 @@ def load_video_frames(
             img_std=img_std,
             async_loading_frames=async_loading_frames,
             compute_device=compute_device,
+            video_output_path=video_output_path,
         )
     else:
         raise NotImplementedError(
@@ -217,6 +220,7 @@ def load_video_frames_from_jpg_images(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    video_output_path=None,
 ):
     """使用流式方式加载JPG序列"""
     if not os.path.isdir(video_path):
@@ -225,13 +229,7 @@ def load_video_frames_from_jpg_images(
         )
 
     # 获取所有JPG文件
-    frame_names = [
-        p
-        for p in os.listdir(video_path)
-        if p.lower().endswith(('.jpg', '.jpeg'))
-    ]
-    frame_names.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
-
+    frame_names = get_jpg_files(video_path, video_output_path)
     num_frames = len(frame_names)
     if num_frames == 0:
         raise RuntimeError(f"在 {video_path} 中没有找到JPG文件")
@@ -301,8 +299,6 @@ class VideoStreamLoader:
         
         self.current_frame = 0
         
-        print(f"视频信息: 宽={self.video_width}, 高={self.video_height}, 总帧数={self.total_frames}")
-        
         if self.total_frames <= 0:
             raise ValueError("无法获取有效的视频帧数")
             
@@ -363,6 +359,7 @@ def load_video_frames_from_video_file(
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
     compute_device=None,
+    video_output_path=None,
 ):
     """使用流式加载器加载视频"""
     try:
@@ -413,3 +410,112 @@ def concat_points(old_point_inputs, new_points, new_labels):
         labels = torch.cat([old_point_inputs["point_labels"], new_labels], dim=1)
 
     return {"point_coords": points, "point_labels": labels}
+
+
+def get_max_frame_number(video_output_path):
+    """获取目录中jpg文件名中最大的数字
+    
+    Args:
+        video_output_path: 输出目录路径
+        
+    Returns:
+        max_num: 最大的文件序号，如果目录不存在或没有jpg文件则返回-1
+    """
+    try:
+        video_output_path = os.path.dirname(video_output_path)
+        if not os.path.isdir(video_output_path):
+            return -1
+            
+        # 获取所有JPG文件
+        frame_names = [
+            p
+            for p in os.listdir(video_output_path)
+            if p.lower().endswith(('.jpg', '.jpeg'))
+        ]
+        
+        if not frame_names:
+            return -1
+            
+        # 从文件名中提取数字并找到最大值
+        max_num = -1
+        frame_names.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
+        max_num = int(''.join(filter(str.isdigit, frame_names[-1]))) if frame_names else -1
+                
+        return max_num
+        
+    except Exception as e:
+        print(f"获取最大帧号时出错: {str(e)}")
+        return -1
+
+def get_all_frame_box_number(video_input_path):
+    """获取所有帧的box序号
+    
+    Args:
+        video_input_path: 输入目录路径
+        
+    Returns:
+        numeric_frame_names: 所有帧的box序号，如果目录不存在或没有txt文件则返回空列表
+    """
+    try:
+        video_input_path = os.path.dirname(video_input_path)
+        if not os.path.isdir(video_input_path):
+            return -1
+            
+        # 获取所有JPG文件
+        frame_names = [
+            p
+            for p in os.listdir(video_input_path)
+            if p.lower().endswith(('.txt', '.txt'))
+        ]
+        
+        if not frame_names:
+            return -1
+            
+        # 从文件名中提取数字并找到最大值
+        max_num = -1
+        frame_names.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
+        numeric_frame_names = [int(''.join(filter(str.isdigit, x))) for x in frame_names]
+        return numeric_frame_names
+        
+    except Exception as e:
+        print(f"获取所有帧号时出错: {str(e)}")
+        return []
+
+
+def get_start_frame_number(video_input_path,video_output_path):
+    """获取开始帧号
+    
+    Args:
+        video_input_path: 输入目录路径
+        video_output_path: 输出目录路径
+        
+    Returns:
+        start_frame_number: 开始帧号，如果目录不存在或没有txt文件则返回-1
+    """
+    numeric_frame_names = get_all_frame_box_number(video_input_path)
+    max_num = get_max_frame_number(video_output_path)
+    if numeric_frame_names and max_num:
+        numeric_frame_names.sort(reverse=True)
+        for frame_number in numeric_frame_names:
+            if frame_number < max_num:
+                print(f"从第{frame_number}帧开始\n")
+                return frame_number
+        return 0
+    return 0
+
+def get_jpg_files(video_input_path,video_output_path):
+    if video_output_path is None or video_input_path is None:
+        return []
+    # 获取JPG序列信息
+    jpg_files = [f for f in os.listdir(video_input_path) 
+                if f.lower().endswith(('.jpg', '.jpeg'))]
+    if not jpg_files:
+        raise ValueError(f"目录 {video_input_path} 中没有找到JPG文件")
+    
+    # 使用自然排序（数值排序），处理没有数字的情况
+    jpg_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
+    start_frame_number = get_start_frame_number(video_input_path, video_output_path)
+    if start_frame_number > 0:
+        jpg_files = jpg_files[start_frame_number:]
+    return jpg_files
+
