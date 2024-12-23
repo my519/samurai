@@ -890,9 +890,6 @@ class SAM2VideoPredictor(SAM2Base):
         if backbone_out is None:
             device = inference_state["device"]
             video_loader = inference_state["video_loader"]
-            video_loader.reset()  # ���õ���Ƶ��ʼ
-            for _ in range(frame_idx):
-                video_loader.read_frame()  # ����֮ǰ��֡
             image = video_loader.read_frame()
             if image is None:
                 raise ValueError(f"Failed to read frame {frame_idx}")

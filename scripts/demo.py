@@ -31,7 +31,7 @@ def load_frame_box_video(input_video_path, frame_idx):
     txt_file_path = os.path.join(input_video_path, f"{frame_idx}.txt")
     box = load_txt(txt_file_path)
     if box:
-        print(f"加载帧{frame_idx}的边界框: {txt_file_path}:{box}")
+        print(f"加载帧{frame_idx}的边界框: {box}")
     return box
 
 def load_frame_box_jpeg(input_video_path, jpg_file):
@@ -39,7 +39,7 @@ def load_frame_box_jpeg(input_video_path, jpg_file):
     txt_file_path = os.path.join(input_video_path, f"{jpg_filename}.txt")
     box = load_txt(txt_file_path)
     if box:
-        print(f"加载帧{jpg_file}的边界框: {txt_file_path}:{box}")
+        print(f"加载帧{jpg_file}的边界框: {box}")
     return box
 
 def determine_model_cfg(model_path):
@@ -149,7 +149,7 @@ def main(args):
         elif is_jpg_dir:
             # 获取JPG序列信息
             input_video_path = input_video_file_name
-            jpg_files = get_jpg_files(input_video_path, args.output_fg_path)
+            jpg_files = get_jpg_files(input_video_path, args.output_fg_path,bprint = True)
             total_frames = len(jpg_files)
             print(f"找到 {total_frames} 个JPG文件")
 
@@ -196,9 +196,8 @@ def main(args):
                 output_video_path=args.output_fg_path
             )
 
-            print("添加第一帧的边界框...")
             bbox, track_label = prompts[0]
-            print(f"第一帧边界框: {bbox}")
+            #print(f"加载第一帧边界框: {bbox}")
             _, _, masks = predictor.add_new_points_or_box(state, box=bbox, frame_idx=0, obj_id=0)
 
             print("开始处理视频帧...")

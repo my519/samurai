@@ -148,7 +148,6 @@ class AsyncVideoFrameLoader:
             # 转换为RGB并调整大小
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame = cv2.resize(frame, (self.image_size, self.image_size))
-            print(f"读取图片: {self.current_frame}")
             
             # 转换为tensor并标准化
             frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
@@ -413,7 +412,7 @@ def concat_points(old_point_inputs, new_points, new_labels):
     return {"point_coords": points, "point_labels": labels}
 
 
-def get_max_frame_number(output_fg_path):
+def get_max_frame_number(output_fg_path,bprint = False):
     """获取目录中jpg文件名中最大的数字
     
     Args:
@@ -442,14 +441,15 @@ def get_max_frame_number(output_fg_path):
         max_num = 0
         frame_names.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
         max_num = int(''.join(filter(str.isdigit, frame_names[-1]))) if frame_names else -1
-        print(f"在目录 {output_fg_path} 中找到JPG文件最大帧号: {max_num}")
+        if bprint:
+            print(f"已处理JPG文件最大帧号: {max_num}")
         return max_num
         
     except Exception as e:
         print(f"获取最大帧号时出错: {str(e)}")
         return 0
 
-def get_all_frame_box_number(video_input_path):
+def get_all_frame_box_number(video_input_path,bprint = False):
     """获取所有帧的box序号
     
     Args:
@@ -477,7 +477,8 @@ def get_all_frame_box_number(video_input_path):
         # 从文件名中提取数字并找到最大值
         frame_names.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
         numeric_frame_names = [int(''.join(filter(str.isdigit, x))) for x in frame_names]
-        print(f"在目录 {video_input_path} 中找到目标框帧号: {numeric_frame_names}")
+        if bprint:
+            print(f"找到的所有目标框帧号: {numeric_frame_names}")
         return numeric_frame_names
         
     except Exception as e:
@@ -485,7 +486,7 @@ def get_all_frame_box_number(video_input_path):
         return []
 
 
-def get_start_frame_number(video_input_path,output_fg_path):
+def get_start_frame_number(video_input_path,output_fg_path,bprint = False):
     """获取开始帧号
     
     Args:
@@ -495,18 +496,19 @@ def get_start_frame_number(video_input_path,output_fg_path):
     Returns:
         start_frame_number: 开始帧号，如果目录不存在或没有txt文件则返回-1
     """
-    numeric_frame_names = get_all_frame_box_number(video_input_path)
-    max_num = get_max_frame_number(output_fg_path)
+    numeric_frame_names = get_all_frame_box_number(video_input_path,bprint)
+    max_num = get_max_frame_number(output_fg_path,bprint)
     if numeric_frame_names and max_num:
         numeric_frame_names.sort(reverse=True)
         for frame_number in numeric_frame_names:
             if frame_number < max_num:
-                print(f"从第{frame_number}帧开始\n")
+                if bprint:
+                    print(f"从第{frame_number}帧开始处理")
                 return frame_number
         return 0
     return 0
 
-def get_jpg_files(video_input_path,output_fg_path):
+def get_jpg_files(video_input_path,output_fg_path,bprint = False):
     if output_fg_path is None or video_input_path is None:
         return []
     # 获取JPG序列信息
@@ -517,7 +519,7 @@ def get_jpg_files(video_input_path,output_fg_path):
     
     # 使用自然排序（数值排序），处理没有数字的情况
     jpg_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
-    start_frame_number = get_start_frame_number(video_input_path, output_fg_path)
+    start_frame_number = get_start_frame_number(video_input_path, output_fg_path,bprint)
     if start_frame_number > 0:
         jpg_files = jpg_files[start_frame_number:]
     return jpg_files
