@@ -423,7 +423,6 @@ def get_max_frame_number(output_fg_path,bprint = False):
     """
     try:
         if not os.path.isdir(output_fg_path):
-            print(f"目录 {output_fg_path} 不存在")
             return 0
             
         # 获取所有JPG文件
@@ -508,9 +507,10 @@ def get_start_frame_number(video_input_path,output_fg_path,bprint = False):
         return 0
     return 0
 
-def get_jpg_files(video_input_path,output_fg_path,bprint = False):
+def get_jpg_files(video_input_path, output_fg_path, bprint=False):
     if output_fg_path is None or video_input_path is None:
         return []
+        
     # 获取JPG序列信息
     jpg_files = [f for f in os.listdir(video_input_path) 
                 if f.lower().endswith(('.jpg', '.jpeg'))]
@@ -519,8 +519,11 @@ def get_jpg_files(video_input_path,output_fg_path,bprint = False):
     
     # 使用自然排序（数值排序），处理没有数字的情况
     jpg_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
-    start_frame_number = get_start_frame_number(video_input_path, output_fg_path,bprint)
+    start_frame_number = get_start_frame_number(video_input_path, output_fg_path, bprint)
+    
     if start_frame_number > 0:
-        jpg_files = jpg_files[start_frame_number:]
+        # 找到起始帧文件名
+        jpg_files = jpg_files[jpg_files.index(f"{start_frame_number}.jpg"):]
+            
     return jpg_files
 

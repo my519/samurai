@@ -12,8 +12,6 @@ from sam2.utils.misc import get_jpg_files
 from tqdm import tqdm
 import traceback
 
-color = [(255, 0, 0)]
-
 def load_txt(gt_path):
     prompts = {}
     try:
@@ -31,16 +29,20 @@ def load_frame_box_video(input_video_path, frame_idx):
     txt_file_path = os.path.join(input_video_path, f"{frame_idx}.txt")
     box = load_txt(txt_file_path)
     if box:
-        print(f"加载帧{frame_idx}的边界框: {box}")
+        print(f"加载帧{frame_idx}的目标框: {box}")
     return box
 
 def load_frame_box_jpeg(input_video_path, jpg_file):
-    jpg_filename = os.path.splitext(jpg_file)[0]
-    txt_file_path = os.path.join(input_video_path, f"{jpg_filename}.txt")
-    box = load_txt(txt_file_path)
-    if box:
-        print(f"加载帧{jpg_file}的边界框: {box}")
-    return box
+    try:
+        jpg_filename = os.path.splitext(jpg_file)[0]
+        txt_file_path = os.path.join(input_video_path, f"{jpg_filename}.txt")
+        box = load_txt(txt_file_path)
+        if box:
+            print(f"加载帧{jpg_file}的目标框: {box}")
+        return box
+    except Exception as e:
+        print(f"加载帧{txt_file_path}的目标框失败: {e}")
+        return None
 
 def determine_model_cfg(model_path):
     if "large" in model_path:
@@ -79,32 +81,23 @@ def get_device(force_cpu=False):
     print("使用CPU")
     return torch.device("cpu")
 
-def save_frame_image(frame, frame_idx, jpg_file_name, is_jpg_dir, video_output_dir):
+def save_frame_image(frame, output_dir, jpg_file_name):
     """保存帧图像
     
     Args:
         frame: 要保存的图像
-        frame_idx: 帧序号
-        current_frame_idx: 当前JPG文件索引
-        jpg_files: JPG文件列表
-        is_jpg_dir: 是否是JPG目录
-        video_output_dir: 输出目录
-        image_type: 图像类型（"foreground"/"mask"/"result"）
+        output_dir: 输出目录
+        jpg_file_name: JPG文件名
     """
     try:
-        if not os.path.exists(video_output_dir):
-            os.makedirs(video_output_dir)
-            
-        if is_jpg_dir:
-            # 获取当前处理的jpg文件名（不含扩展名）
-            base_name = os.path.splitext(jpg_file_name)[0]
-            # 构建图像保存路径
-            image_path = os.path.join(video_output_dir, f"{base_name}.jpg")
-        else:
-            # 如果是视频输入，使用帧号作为文件名
-            image_path = os.path.join(video_output_dir, f"{frame_idx}.jpg")
-            
-        cv2.imwrite(image_path, frame)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        image_path = os.path.join(output_dir, jpg_file_name)
+        
+        # 设置JPEG质量参数
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]  # 100是质量值，范围0-100
+        cv2.imwrite(image_path, frame, encode_param)
         
     except Exception as e:
         print(f"保存图像时出错: {str(e)}")
@@ -160,7 +153,7 @@ def main(args):
             if first_frame is None:
                 raise ValueError(f"无法读取图片: {jpg_files[0]}")
             height, width = first_frame.shape[:2]
-            frame_rate = 30  # 默认帧率
+            frame_rate = args.frame_rate  # 默认帧率
         else:
             raise ValueError("输入路径必须是MP4视频文件或包含JPG序列的目录")
         
@@ -195,16 +188,16 @@ def main(args):
                 offload_state_to_cpu=True,
                 output_video_path=args.output_fg_path
             )
-
+            
+            if prompts is None:
+                raise ValueError("加载第一帧边界框失败")
+            
             bbox, track_label = prompts[0]
-            #print(f"加载第一帧边界框: {bbox}")
             _, _, masks = predictor.add_new_points_or_box(state, box=bbox, frame_idx=0, obj_id=0)
 
             print("开始处理视频帧...")
             if is_video:
                 cap = cv2.VideoCapture(input_video_path)
-            else:
-                current_frame_idx = 0
                 
             for frame_idx, object_ids, masks in tqdm(
                 predictor.propagate_in_video(state),
@@ -217,71 +210,63 @@ def main(args):
                         break
                 else:
                     # 读取JPG序列中的当前帧
-                    frame_path = os.path.join(input_video_path, jpg_files[current_frame_idx])
+                    frame_path = os.path.join(input_video_path, jpg_files[frame_idx])
                     frame = cv2.imread(frame_path)
                     if frame is None:
                         print(f"无法读取图片: {frame_path}")
                         break
-                    current_frame_idx += 1
 
                 # 尝试读入与帧序号frame_idx同名的txt文件，作为提示信息
                 if frame_idx > 0:
                     if is_video:
                         prompts = load_frame_box_video(input_video_path, frame_idx)
                     else:
-                        prompts = load_frame_box_jpeg(input_video_path, jpg_files[current_frame_idx])
+                        prompts = load_frame_box_jpeg(input_video_path, jpg_files[frame_idx])
 
                     if prompts:
-                        try:
-                            print(f"重置第 {frame_idx} 帧的跟踪状态")
-                            
-                            # 保存当前设备信息
-                            current_device = device
-                            
-                            # 重置状态前先清理资源
-                            if 'state' in locals():
-                                del state
-                            torch.cuda.empty_cache()  # 清理GPU内存
-                            gc.collect()  # 清理CPU内存
-                            
-                            # 重新初始化状态
-                            state = predictor.init_state(
-                                input_video_file_name,
-                                offload_video_to_cpu=True,
-                                offload_state_to_cpu=True,
-                                output_video_path=args.output_fg_path
-                            )
-                            
-                            # 添加新的边界框
-                            bbox, track_label = prompts[0]
-                            print(f"添加新的边界框: {bbox}")
-                            
-                            # 检查边界框的有效性
-                            x1, y1, x2, y2 = bbox
-                            if (x1 >= 0 and y1 >= 0 and x2 < width and y2 < height and 
-                                x2 > x1 and y2 > y1):
-                                # 添加新的边界框并获取掩码
-                                _, _, new_masks = predictor.add_new_points_or_box(
-                                    state, 
-                                    box=bbox, 
-                                    frame_idx=frame_idx, 
-                                    obj_id=0
-                                )
-                                
-                                # 检查掩码的有效性
-                                if new_masks is not None and len(new_masks) > 0:
-                                    print(f"更新第 {frame_idx} 帧的掩码")
-                                    masks = new_masks  # 更新当前掩码
-                                else:
-                                    print(f"警告: 第 {frame_idx} 帧未能生成有效掩码")
-                                    continue
-                            else:
-                                print(f"警告: 无效的边界框坐标: {bbox}")
-                                continue
-                                
-                        except Exception as e:
-                            print(f"重置跟踪状态时出错: {str(e)}")
-                            traceback.print_exc()  # 打印完整的错误堆栈
+                        print(f"重置第 {frame_idx} 帧的跟踪状态")
+                        
+                        # 保存当前设备信息
+                        current_device = device
+                        
+                        # 重置状态前先清理资源
+                        if 'state' in locals():
+                            del state
+                        torch.cuda.empty_cache()  # 清理GPU内存
+                        gc.collect()  # 清理CPU内存
+                        
+                        # 重新初始化状态
+                        state = predictor.init_state(
+                            input_video_file_name,
+                            offload_video_to_cpu=True,
+                            offload_state_to_cpu=True,
+                            output_video_path=args.output_fg_path
+                        )
+                        
+                        # 添加新的边界框
+                        bbox, track_label = prompts[0]
+                        print(f"加载新的目标框: {bbox}")
+                        
+                        # 检查边界框的有效性
+                        x1, y1, x2, y2 = bbox
+                        x1 = 0 if x1 < 0 else x1
+                        y1 = 0 if y1 < 0 else y1
+                        x2 = width if x2 > width else x2
+                        y2 = height if y2 > height else y2
+                        # 添加新的边界框并获取掩码
+                        _, _, new_masks = predictor.add_new_points_or_box(
+                            state, 
+                            box=bbox, 
+                            frame_idx=frame_idx, 
+                            obj_id=0
+                        )
+                        
+                        # 检查掩码的有效性
+                        if new_masks is not None and len(new_masks) > 0:
+                            print(f"更新第 {frame_idx} 帧的掩码")
+                            masks = new_masks  # 更新当前掩码
+                        else:
+                            print(f"警告: 第 {frame_idx} 帧未能生成有效掩码")
                             continue
 
                 # 处理每个对象的mask
@@ -353,21 +338,27 @@ def main(args):
                         # 保存前景和背景图像
                             save_frame_image(
                                 frame=foreground,
-                                frame_idx=frame_idx,
-                                jpg_file_name=jpg_files[current_frame_idx],
-                                is_jpg_dir=is_jpg_dir,
-                                video_output_dir=args.output_fg_path
-                            )
+                                output_dir=args.output_fg_path,
+                                jpg_file_name = jpg_files[ frame_idx] if is_jpg_dir else f"{frame_idx}.jpg",
+                                )
 
                             save_frame_image(
                                 frame=background,
-                                frame_idx=frame_idx,
-                                jpg_file_name=jpg_files[current_frame_idx],
-                                is_jpg_dir=is_jpg_dir,
-                                video_output_dir=args.output_bg_path
+                                output_dir=args.output_bg_path,
+                                jpg_file_name = jpg_files[frame_idx] if is_jpg_dir else f"{frame_idx}.jpg",
                             )
 
+                            save_frame_image(
+                                frame=result,
+                                output_dir=args.output_result_path,
+                                jpg_file_name = jpg_files[frame_idx] if is_jpg_dir else f"{frame_idx}.jpg",
+                            )
 
+                            save_frame_image(
+                                frame=mask_vis,
+                                output_dir=args.output_mask_path,
+                                jpg_file_name = jpg_files[frame_idx] if is_jpg_dir else f"{frame_idx}.jpg",
+                            )
                             out.write(result)
 
                     except Exception as e:
@@ -395,13 +386,16 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    #parser.add_argument("--input_video_path", default="D:/2024Work/14.AIVideo/6.Assets/6.Video/hero.jpg/", help="Input video path.")
-    parser.add_argument("--input_video_path", required=True, help="Input video path.")
+    parser.add_argument("--input_video_path", default="D:/2024Work/14.AIVideo/6.Assets/6.Video/qian/", help="Input video path.")
+    #parser.add_argument("--input_video_path", required=True, help="Input video path.")
     parser.add_argument("--model_path", default="sam2/checkpoints/sam2.1_hiera_base_plus.pt")
     parser.add_argument("--output_video_path", default="./output/demo.mp4")
     parser.add_argument("--output_fg_path", default="./output/fg")
     parser.add_argument("--output_bg_path", default="./output/bg")
+    parser.add_argument("--output_result_path", default="./output/result")
+    parser.add_argument("--output_mask_path", default="./output/mask")
     parser.add_argument("--save_to_video", default=True, type=bool)
+    parser.add_argument("--frame_rate", default=25, type=int)
     parser.add_argument("--force_cpu", action="store_true", help="强制使用CPU运行，忽略GPU")
     args = parser.parse_args()
     main(args)
