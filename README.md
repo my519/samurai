@@ -86,13 +86,13 @@ To run the demo with your custom video or frame directory, use the following exa
 ### Input is Video File
 
 ```
-python scripts/demo.py --video_path <your_video.mp4> --txt_path <path_to_first_frame_bbox.txt>
+python scripts/demo.py --input_video_path <your_video.mp4> --txt_path <path_to_first_frame_bbox.txt>
 ```
 
 ### Input is Frame Folder
 ```
 # Only JPG images are supported
-python scripts/demo.py --video_path <your_frame_directory> --txt_path <path_to_first_frame_bbox.txt>
+python scripts/demo.py --input_video_path <your_frame_directory> --txt_path <path_to_first_frame_bbox.txt>
 ```
 
 ## FAQs

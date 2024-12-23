@@ -82,9 +82,9 @@ def get_args_parser():
     return parser
 
 
-def decode_video(video_path: str):
-    assert os.path.exists(video_path)
-    video = cv2.VideoCapture(video_path)
+def decode_video(input_video_path: str):
+    assert os.path.exists(input_video_path)
+    video = cv2.VideoCapture(input_video_path)
     video_frames = []
     while video.isOpened():
         ret, frame = video.read()
@@ -95,8 +95,8 @@ def decode_video(video_path: str):
     return video_frames
 
 
-def extract_frames(video_path, sample_rate):
-    frames = decode_video(video_path)
+def extract_frames(input_video_path, sample_rate):
+    frames = decode_video(input_video_path)
     return frames[::sample_rate]
 
 

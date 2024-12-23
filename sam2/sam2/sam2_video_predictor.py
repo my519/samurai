@@ -49,20 +49,20 @@ class SAM2VideoPredictor(SAM2Base):
     @torch.inference_mode()
     def init_state(
         self,
-        video_path,
+        input_video_path,
         offload_video_to_cpu=False,
         offload_state_to_cpu=False,
         async_loading_frames=False,
-        video_output_path=None,
+        output_video_path=None,
     ):
         """Initialize an inference state."""
         compute_device = self.device  # device of the model
         video_loader, video_height, video_width = load_video_frames(
-            video_path=video_path,
+            input_video_path=input_video_path,
             image_size=self.image_size,
             offload_video_to_cpu=offload_video_to_cpu,
             compute_device=compute_device,
-            video_output_path=video_output_path,
+            output_video_path=output_video_path,
         )
         
         inference_state = {}

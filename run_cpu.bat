@@ -1,3 +1,3 @@
 
-python scripts/demo.py --video_path ./assets/hero.mp4 
+python scripts/demo.py --input_video_path ./assets/hero.mp4 
 

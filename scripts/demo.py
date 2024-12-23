@@ -27,18 +27,16 @@ def load_txt(gt_path):
         pass
     return prompts
 
-def load_frame_box_video(video_path, frame_idx):
-    video_path = os.path.dirname(video_path)
-    txt_file_path = os.path.join(video_path, f"{frame_idx}.txt")
+def load_frame_box_video(input_video_path, frame_idx):
+    txt_file_path = os.path.join(input_video_path, f"{frame_idx}.txt")
     box = load_txt(txt_file_path)
     if box:
         print(f"加载帧{frame_idx}的边界框: {txt_file_path}:{box}")
     return box
 
-def load_frame_box_jpeg(video_path, jpg_file):
-    video_path = os.path.dirname(video_path)
+def load_frame_box_jpeg(input_video_path, jpg_file):
     jpg_filename = os.path.splitext(jpg_file)[0]
-    txt_file_path = os.path.join(video_path, f"{jpg_filename}.txt")
+    txt_file_path = os.path.join(input_video_path, f"{jpg_filename}.txt")
     box = load_txt(txt_file_path)
     if box:
         print(f"加载帧{jpg_file}的边界框: {txt_file_path}:{box}")
@@ -81,7 +79,7 @@ def get_device(force_cpu=False):
     print("使用CPU")
     return torch.device("cpu")
 
-def save_frame_image(frame, frame_idx, current_frame_idx, jpg_files, is_jpg_dir, video_output_dir):
+def save_frame_image(frame, frame_idx, jpg_file_name, is_jpg_dir, video_output_dir):
     """保存帧图像
     
     Args:
@@ -99,8 +97,7 @@ def save_frame_image(frame, frame_idx, current_frame_idx, jpg_files, is_jpg_dir,
             
         if is_jpg_dir:
             # 获取当前处理的jpg文件名（不含扩展名）
-            current_jpg = jpg_files[current_frame_idx]
-            base_name = os.path.splitext(current_jpg)[0]
+            base_name = os.path.splitext(jpg_file_name)[0]
             # 构建图像保存路径
             image_path = os.path.join(video_output_dir, f"{base_name}.jpg")
         else:
@@ -128,12 +125,14 @@ def main(args):
             predictor = build_sam2_video_predictor(model_cfg, args.model_path, device=device)
         
         # 检查输入路径是视频还是图片目录
-        is_video = os.path.isfile(args.video_path) and args.video_path.lower().endswith(('.mp4', '.MP4'))
-        is_jpg_dir = os.path.isdir(args.video_path)
+        is_video = os.path.isfile(args.input_video_path) and args.input_video_path.lower().endswith(('.mp4', '.MP4'))
+        is_jpg_dir = os.path.isdir(args.input_video_path)
+        input_video_file_name = args.input_video_path
         
         if is_video:
             # 获取视频信息
-            cap = cv2.VideoCapture(args.video_path)
+            input_video_path = os.path.dirname(input_video_file_name)
+            cap = cv2.VideoCapture(input_video_file_name)
             frame_rate = cap.get(cv2.CAP_PROP_FPS)
             frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
             if frames is None:
@@ -145,14 +144,19 @@ def main(args):
                 raise ValueError("无法读取视频")
             height, width = first_frame.shape[:2]
             cap.release()
+            prompts=load_frame_box_video(input_video_path,0)
+
         elif is_jpg_dir:
             # 获取JPG序列信息
-            jpg_files = get_jpg_files(args.video_path, args.video_output_path)
+            input_video_path = input_video_file_name
+            jpg_files = get_jpg_files(input_video_path, args.output_fg_path)
             total_frames = len(jpg_files)
             print(f"找到 {total_frames} 个JPG文件")
 
+            prompts=load_frame_box_jpeg(input_video_path,jpg_files[0])
+
             # 读取第一张图片获取尺寸信息
-            first_frame = cv2.imread(os.path.join(args.video_path, jpg_files[0]))
+            first_frame = cv2.imread(os.path.join(input_video_path, jpg_files[0]))
             if first_frame is None:
                 raise ValueError(f"无法读取图片: {jpg_files[0]}")
             height, width = first_frame.shape[:2]
@@ -162,33 +166,34 @@ def main(args):
         
         # 加载提示信息
         #prompts = load_txt(args.txt_path)
-        prompts=load_frame_box_video(args.video_path,0)
 
         # 设置输出视频
-        video_output_dir = os.path.dirname(args.video_output_path)
+        video_output_dir = os.path.dirname(args.output_video_path)
         if not os.path.exists(video_output_dir):
             os.makedirs(video_output_dir)
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(args.video_output_path, fourcc, frame_rate, (width, height))
+        out = cv2.VideoWriter(args.output_video_path, fourcc, frame_rate, (width, height))
         
         # 创建显示窗口
-        cv2.namedWindow('Original', cv2.WINDOW_NORMAL)
+        #cv2.namedWindow('Original', cv2.WINDOW_NORMAL)
         cv2.namedWindow('Mask', cv2.WINDOW_NORMAL)
         cv2.namedWindow('Result', cv2.WINDOW_NORMAL)
         cv2.namedWindow('Foreground', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Original', int(width/2), int(height/2))
+        cv2.namedWindow('Background', cv2.WINDOW_NORMAL)
+        #cv2.resizeWindow('Original', int(width/2), int(height/2))
         cv2.resizeWindow('Mask', int(width/2), int(height/2))
         cv2.resizeWindow('Result', int(width/2), int(height/2))
         cv2.resizeWindow('Foreground', int(width/2), int(height/2))
+        cv2.resizeWindow('Background', int(width/2), int(height/2))
 
         with torch.inference_mode():
             print("初始化状态...")
             state = predictor.init_state(
-                args.video_path,
+                input_video_file_name,
                 offload_video_to_cpu=True,
                 offload_state_to_cpu=True,
-                video_output_path=args.video_output_path
+                output_video_path=args.output_fg_path
             )
 
             print("添加第一帧的边界框...")
@@ -198,7 +203,7 @@ def main(args):
 
             print("开始处理视频帧...")
             if is_video:
-                cap = cv2.VideoCapture(args.video_path)
+                cap = cv2.VideoCapture(input_video_path)
             else:
                 current_frame_idx = 0
                 
@@ -213,7 +218,7 @@ def main(args):
                         break
                 else:
                     # 读取JPG序列中的当前帧
-                    frame_path = os.path.join(args.video_path, jpg_files[current_frame_idx])
+                    frame_path = os.path.join(input_video_path, jpg_files[current_frame_idx])
                     frame = cv2.imread(frame_path)
                     if frame is None:
                         print(f"无法读取图片: {frame_path}")
@@ -223,9 +228,9 @@ def main(args):
                 # 尝试读入与帧序号frame_idx同名的txt文件，作为提示信息
                 if frame_idx > 0:
                     if is_video:
-                        prompts = load_frame_box_video(args.video_path, frame_idx)
+                        prompts = load_frame_box_video(input_video_path, frame_idx)
                     else:
-                        prompts = load_frame_box_jpeg(args.video_path, jpg_files[current_frame_idx])
+                        prompts = load_frame_box_jpeg(input_video_path, jpg_files[current_frame_idx])
 
                     if prompts:
                         try:
@@ -242,10 +247,10 @@ def main(args):
                             
                             # 重新初始化状态
                             state = predictor.init_state(
-                                args.video_path,
+                                input_video_file_name,
                                 offload_video_to_cpu=True,
                                 offload_state_to_cpu=True,
-                                video_output_path=args.video_output_path
+                                output_video_path=args.output_fg_path
                             )
                             
                             # 添加新的边界框
@@ -291,53 +296,23 @@ def main(args):
                         result = frame.copy()
                         
                         # 创建前景图像（绿色背景）
-                        foreground = np.full_like(frame, (0, 255, 0))  # 绿色背景
-                        
-                        # 处理按键
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == ord('q'):  # 按q退出
-                            raise StopIteration
-                        elif key == ord(' '):  # 按空格暂停
-                            while True:
-                                key = cv2.waitKey(0) & 0xFF
-                                if key == ord(' '):  # 再次按空格继续
-                                    break
-                                elif key == ord('q'):  # 按q退出
-                                    raise StopIteration                                  
-                        
-                        # 检查mask是否为空
-                        if not np.any(mask):
+                        foreground = np.full_like(frame, (0, 0, 0))  # 黑色背景
+                        background = frame.copy()  # 复制原始图像作为背景
+
+                        # 处理mask区域
+                        if np.any(mask):
+                            # 前景：只保留mask区域的原始图像
+                            np.copyto(foreground, frame, where=mask[:, :, None])
+                            # 背景：将mask区域设置为绿色
+                            background[mask] = (0, 255, 0)      
+                            info_text = f'Frame: {frame_idx}'               
+                        else:
                             # 添加帧信息
                             info_text = f'Frame: {frame_idx} (No Mask)'
-                            cv2.putText(result, info_text, (10, 30), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                            
-                            # 如果有ground truth边界框，仍然显示它
-                            if frame_idx in prompts:
-                                x1, y1, x2, y2 = prompts[frame_idx][0]
-                                cv2.rectangle(result, (x1, y1), (x2, y2), 
-                                            (0, 255, 0), 2)  # 绿色表示真实框
-                            
-                            # 显示和保存结果
-                            cv2.imshow('Original', frame)
-                            cv2.imshow('Mask', np.zeros_like(frame))  # 显示空mask
-                            cv2.imshow('Result', result)
-                            cv2.imshow('Foreground', foreground)  # 显示前景图像
-
-                            # 保存前景图像
-                            save_frame_image(
-                                frame=foreground,
-                                frame_idx=frame_idx,
-                                current_frame_idx=current_frame_idx,
-                                jpg_files=jpg_files,
-                                is_jpg_dir=is_jpg_dir,
-                                video_output_dir=video_output_dir,
-                            )
-                            
-                            if args.save_to_video:
-                                out.write(result)
-                            continue
                         
+                        # 增加延时，用于显示图像
+                        key = cv2.waitKey(1)
+                         
                         # 创建mask可视化
                         mask_vis = np.zeros_like(frame)
                         mask_vis[mask] = (0, 255, 0)  # 绿色表示mask区域
@@ -347,28 +322,8 @@ def main(args):
                             result[mask].shape == mask_vis[mask].shape):
                             # 叠加mask
                             result[mask] = cv2.addWeighted(result[mask], 0.7, mask_vis[mask], 0.3, 0)
-                        else:
-                            # 添加帧信息
-                            info_text = f'Frame: {frame_idx} (Invalid Mask)'
-                            cv2.putText(result, info_text, (10, 30), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                            
-                            # 如果有ground truth边界框，仍然显示它
-                            if frame_idx in prompts:
-                                x1, y1, x2, y2 = prompts[frame_idx][0]
-                                cv2.rectangle(result, (x1, y1), (x2, y2), 
-                                            (0, 255, 0), 2)  # 绿色表示真实框
-                            
-                            # 显示和保存结果
-                            cv2.imshow('Original', frame)
-                            cv2.imshow('Mask', np.zeros_like(frame))
-                            cv2.imshow('Result', result)
-                            cv2.imshow('Foreground', foreground)  # 显示前景图像
-                            
-                            if args.save_to_video:
-                                out.write(result)
-                            continue
 
+                            
                         # 取边界框
                         non_zero_indices = np.argwhere(mask)
                         if len(non_zero_indices) > 0:
@@ -378,38 +333,42 @@ def main(args):
                             cv2.rectangle(result, (x_min, y_min), (x_max, y_max), 
                                         (0, 0, 255), 2)  # 红色表示预测框
 
-                        # 绘制ground truth边界框
+                        # 如果有ground truth边界框，仍然显示它
                         if frame_idx in prompts:
                             x1, y1, x2, y2 = prompts[frame_idx][0]
                             cv2.rectangle(result, (x1, y1), (x2, y2), 
                                         (0, 255, 0), 2)  # 绿色表示真实框
 
-                        # 添加帧信息
-                        info_text = f'Frame: {frame_idx}'
                         cv2.putText(result, info_text, (10, 30), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                         
-                        # 复制mask区域的原始图像
-                        np.copyto(foreground, frame, where=mask[:, :, None])  # 只复制mask区域的原始图像
-
                         # 显示图像
-                        cv2.imshow('Original', frame)
+                        #cv2.imshow('Original', frame)
                         cv2.imshow('Mask', mask_vis)
                         cv2.imshow('Result', result)
-                        cv2.imshow('Foreground', foreground)  # 显示前景图像
+                        cv2.imshow('Foreground', foreground)
+                        cv2.imshow('Background', background)
                         
-                        # 保存前景图像
-                        save_frame_image(
-                            frame=foreground,
-                            frame_idx=frame_idx,
-                            current_frame_idx=current_frame_idx,
-                            jpg_files=jpg_files,
-                            is_jpg_dir=is_jpg_dir,
-                            video_output_dir=video_output_dir,
-                        )
-
                         # 保存结果
                         if args.save_to_video:
+                        # 保存前景和背景图像
+                            save_frame_image(
+                                frame=foreground,
+                                frame_idx=frame_idx,
+                                jpg_file_name=jpg_files[current_frame_idx],
+                                is_jpg_dir=is_jpg_dir,
+                                video_output_dir=args.output_fg_path
+                            )
+
+                            save_frame_image(
+                                frame=background,
+                                frame_idx=frame_idx,
+                                jpg_file_name=jpg_files[current_frame_idx],
+                                is_jpg_dir=is_jpg_dir,
+                                video_output_dir=args.output_bg_path
+                            )
+
+
                             out.write(result)
 
                     except Exception as e:
@@ -437,10 +396,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    #parser.add_argument("--video_path", default="D:/2024Work/14.AIVideo/6.Assets/6.Video/hero.jpg/", help="Input video path.")
-    parser.add_argument("--video_path", required=True, help="Input video path.")
+    #parser.add_argument("--input_video_path", default="D:/2024Work/14.AIVideo/6.Assets/6.Video/hero.jpg/", help="Input video path.")
+    parser.add_argument("--input_video_path", required=True, help="Input video path.")
     parser.add_argument("--model_path", default="sam2/checkpoints/sam2.1_hiera_base_plus.pt")
-    parser.add_argument("--video_output_path", default="./output/demo.mp4")
+    parser.add_argument("--output_video_path", default="./output/demo.mp4")
+    parser.add_argument("--output_fg_path", default="./output/fg")
+    parser.add_argument("--output_bg_path", default="./output/bg")
     parser.add_argument("--save_to_video", default=True, type=bool)
     parser.add_argument("--force_cpu", action="store_true", help="强制使用CPU运行，忽略GPU")
     args = parser.parse_args()

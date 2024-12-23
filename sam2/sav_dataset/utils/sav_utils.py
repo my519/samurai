@@ -13,11 +13,11 @@ import numpy as np
 import pycocotools.mask as mask_util
 
 
-def decode_video(video_path: str) -> List[np.ndarray]:
+def decode_video(input_video_path: str) -> List[np.ndarray]:
     """
     Decode the video and return the RGB frames
     """
-    video = cv2.VideoCapture(video_path)
+    video = cv2.VideoCapture(input_video_path)
     video_frames = []
     while video.isOpened():
         ret, frame = video.read()
