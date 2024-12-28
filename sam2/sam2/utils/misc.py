@@ -177,6 +177,7 @@ def load_video_frames(
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
     output_video_path=None,
+    start_Frame_idx=0,
 ):
     """
     Load the video frames from input_video_path. The frames are resized to image_size as in
@@ -205,6 +206,7 @@ def load_video_frames(
             async_loading_frames=async_loading_frames,
             compute_device=compute_device,
             output_video_path=output_video_path,
+            start_Frame_idx=start_Frame_idx,
         )
     else:
         raise NotImplementedError(
@@ -221,6 +223,7 @@ def load_video_frames_from_jpg_images(
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
     output_video_path=None,
+    start_Frame_idx=0,
 ):
     """使用流式方式加载JPG序列"""
     if not os.path.isdir(input_video_path):
@@ -229,7 +232,7 @@ def load_video_frames_from_jpg_images(
         )
 
     # 获取所有JPG文件
-    frame_names = get_jpg_files(input_video_path, output_video_path)
+    frame_names = get_jpg_files(input_video_path, start_Frame_idx)
     num_frames = len(frame_names)
     if num_frames == 0:
         raise RuntimeError(f"在 {input_video_path} 中没有找到JPG文件")
@@ -508,7 +511,7 @@ def get_start_frame_number(video_input_path,output_fg_path,bprint = False):
         return 0
     return 0
 
-def get_jpg_files(video_input_path, output_fg_path, bprint=False):
+def get_jpg_files_bak(video_input_path, output_fg_path, bprint=False):
     if output_fg_path is None or video_input_path is None:
         return []
         
@@ -525,6 +528,25 @@ def get_jpg_files(video_input_path, output_fg_path, bprint=False):
     if start_frame_number > 0:
         # 找到起始帧文件名
         jpg_files = jpg_files[jpg_files.index(f"{start_frame_number}.jpg"):]
+            
+    return jpg_files
+
+def get_jpg_files(video_input_path, start_Frame_idx, bprint=False):
+    if video_input_path is None:
+        return []
+        
+    # 获取JPG序列信息
+    jpg_files = [f for f in os.listdir(video_input_path) 
+                if f.lower().endswith(('.jpg', '.jpeg'))]
+    if not jpg_files:
+        raise ValueError(f"目录 {video_input_path} 中没有找到JPG文件")
+    
+    # 使用自然排序（数值排序），处理没有数字的情况
+    jpg_files.sort(key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0)
+    
+    if start_Frame_idx > 0:
+        # 找到起始帧文件名
+        jpg_files = jpg_files[jpg_files.index(f"{start_Frame_idx}.jpg"):]
             
     return jpg_files
 

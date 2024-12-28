@@ -418,6 +418,18 @@ class SAM2Base(torch.nn.Module):
         sam_output_token = sam_output_tokens[:, 0]
         kf_ious = None
         if multimask_output and self.samurai_mode:
+            # 在所有分支之前先创建 high_res_multibboxes
+            high_res_multibboxes = []
+            batch_inds = torch.arange(B, device=device)
+            for i in range(ious.shape[1]):
+                non_zero_indices = torch.argwhere(high_res_multimasks[batch_inds, i].unsqueeze(1)[0][0] > 0.0)
+                if len(non_zero_indices) == 0:
+                    high_res_multibboxes.append([0, 0, 0, 0])
+                else:
+                    y_min, x_min = non_zero_indices.min(dim=0).values
+                    y_max, x_max = non_zero_indices.max(dim=0).values
+                    high_res_multibboxes.append([x_min.item(), y_min.item(), x_max.item(), y_max.item()])
+            
             if self.kf_mean is None and self.kf_covariance is None or self.stable_frames == 0:
                 best_iou_inds = torch.argmax(ious, dim=-1)
                 batch_inds = torch.arange(B, device=device)
@@ -441,40 +453,36 @@ class SAM2Base(torch.nn.Module):
                 batch_inds = torch.arange(B, device=device)
                 low_res_masks = low_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
                 high_res_masks = high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
-                non_zero_indices = torch.argwhere(high_res_masks[0][0] > 0.0)
-                if len(non_zero_indices) == 0:
-                    high_res_bbox = [0, 0, 0, 0]
-                else:
-                    y_min, x_min = non_zero_indices.min(dim=0).values
-                    y_max, x_max = non_zero_indices.max(dim=0).values
-                    high_res_bbox = [x_min.item(), y_min.item(), x_max.item(), y_max.item()]
+                
                 try:
-                    # 获取 IOU 值
-                    iou_values = ious[0][best_iou_inds]
-                    
-                    # 处理多元素张量
-                    if isinstance(iou_values, torch.Tensor):
-                        if iou_values.numel() > 1:
-                            iou_check = iou_values.mean().item()  # 使用平均值
+                    # 处理索引
+                    if isinstance(best_iou_inds, torch.Tensor):
+                        if best_iou_inds.numel() > 1:
+                            idx = best_iou_inds[0].item()
                         else:
-                            iou_check = iou_values.item()
+                            idx = best_iou_inds.item()
                     else:
-                        iou_check = iou_values
+                        idx = int(best_iou_inds)
                         
-                    # 比较标量值
-                    if iou_check < self.stable_ious_threshold:
+                    # 检查索引是否有效
+                    if idx < 0 or idx >= len(high_res_multibboxes):
+                        print(f"无效的索引: {idx}, 长度: {len(high_res_multibboxes)}")
                         self.stable_frames = 0
-                    else:
-                        self.kf_mean, self.kf_covariance = self.kf.update(
-                            self.kf_mean, 
-                            self.kf_covariance, 
-                            self.kf.xyxy_to_xyah(high_res_bbox)
-                        )
-                        self.stable_frames += 1
+                        return
                         
+                    # 使用转换后的整数索引
+                    bbox = high_res_multibboxes[idx]
+                    self.kf_mean, self.kf_covariance = self.kf.update(
+                        self.kf_mean, 
+                        self.kf_covariance, 
+                        self.kf.xyxy_to_xyah(bbox)
+                    )
+                    self.stable_frames += 1
+                    
                 except Exception as e:
-                    print(f"处理 IOU 值时出错: {str(e)}")
-                    self.stable_frames = 0  # 出错时重置稳定帧计数
+                    print(f"更新卡尔曼滤波器时出错: {str(e)}")
+                    self.stable_frames = 0
+                
                 if sam_output_tokens.size(1) > 1:
                     sam_output_token = sam_output_tokens[batch_inds, best_iou_inds]
                 self.frame_cnt += 1
@@ -495,11 +503,22 @@ class SAM2Base(torch.nn.Module):
                 # weighted iou
                 weighted_ious = self.kf_score_weight * kf_ious + (1 - self.kf_score_weight) * ious
                 best_iou_inds = torch.argmax(weighted_ious, dim=-1)
+                
+                # 处理索引
+                if isinstance(best_iou_inds, torch.Tensor):
+                    if best_iou_inds.numel() > 1:
+                        idx = best_iou_inds[0].item()
+                    else:
+                        idx = best_iou_inds.item()
+                else:
+                    idx = int(best_iou_inds)
+                    
                 batch_inds = torch.arange(B, device=device)
-                low_res_masks = low_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
-                high_res_masks = high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
+                low_res_masks = low_res_multimasks[batch_inds, idx].unsqueeze(1)
+                high_res_masks = high_res_multimasks[batch_inds, idx].unsqueeze(1)
+                
                 if sam_output_tokens.size(1) > 1:
-                    sam_output_token = sam_output_tokens[batch_inds, best_iou_inds]
+                    sam_output_token = sam_output_tokens[batch_inds, idx]
 
                 if False:
                     # make all these on cpu                        
@@ -514,18 +533,20 @@ class SAM2Base(torch.nn.Module):
                     }
                 self.frame_cnt += 1
 
-                if ious[0][best_iou_inds].numel() > 1:
-                    iou_check = ious[0][best_iou_inds].mean().item()
+                if ious[0][idx].numel() > 1:
+                    iou_check = ious[0][idx].mean().item()
                 else:
-                    iou_check = ious[0][best_iou_inds].item()
+                    iou_check = ious[0][idx].item()
                     
                 if iou_check < self.stable_ious_threshold:
                     self.stable_frames = 0
                 else:
+                    # 使用转换后的整数索引
+                    bbox = high_res_multibboxes[idx]
                     self.kf_mean, self.kf_covariance = self.kf.update(
                         self.kf_mean, 
                         self.kf_covariance, 
-                        self.kf.xyxy_to_xyah(high_res_multibboxes[best_iou_inds])
+                        self.kf.xyxy_to_xyah(bbox)
                     )
         elif multimask_output and not self.samurai_mode:
             # take the best mask prediction (with the highest IoU estimation)

@@ -14,6 +14,8 @@ import traceback
 
 def load_txt(gt_path):
     prompts = {}
+    if not os.path.exists(gt_path):
+        return {}
     try:
         with open(gt_path, 'r') as f:
             gt = f.readlines()
@@ -22,7 +24,7 @@ def load_txt(gt_path):
             index,x, y, w, h = int(index), int(x), int(y), int(w), int(h)
             prompts[index] = [x, y, x + w, y + h]
     except Exception as e:
-        pass
+        print(f"加载txt文件{gt_path}失败: {e}")
     return prompts
 
 def load_frame_box_video(input_video_path, frame_idx):
@@ -107,7 +109,8 @@ def main(args):
         # 初始化模型
         model_cfg = determine_model_cfg(args.model_path)
         device = get_device(args.force_cpu)
-        print(f"使用设备: {device}")
+        start_Frame_idx = args.start_Frame_idx
+        print(f"使用设备: {device}, 从第{start_Frame_idx}帧开始")
         
         # 初始化预测器
         if device.type == "xpu":
@@ -137,12 +140,12 @@ def main(args):
                 raise ValueError("无法读取视频")
             height, width = first_frame.shape[:2]
             cap.release()
-            prompts=load_frame_box_video(input_video_path,0)
+            prompts=load_frame_box_video(input_video_path,start_Frame_idx)
 
         elif is_jpg_dir:
             # 获取JPG序列信息
             input_video_path = input_video_file_name
-            jpg_files = get_jpg_files(input_video_path, args.output_fg_path,bprint = True)
+            jpg_files = get_jpg_files(input_video_path, start_Frame_idx,bprint = True)
             total_frames = len(jpg_files)
             print(f"找到 {total_frames} 个JPG文件")
 
@@ -186,7 +189,8 @@ def main(args):
                 input_video_file_name,
                 offload_video_to_cpu=True,
                 offload_state_to_cpu=True,
-                output_video_path=args.output_fg_path
+                output_video_path=args.output_fg_path,
+                start_Frame_idx=start_Frame_idx
             )
             
             if prompts is None:
@@ -217,7 +221,7 @@ def main(args):
                         break
 
                 #从第1帧开始，尝试读入与帧序号frame_idx同名的txt文件，作为提示信息
-                if frame_idx > 0:
+                if frame_idx > start_Frame_idx:
                     if is_video:
                         prompts = load_frame_box_video(input_video_path, frame_idx)
                     else:
@@ -240,7 +244,8 @@ def main(args):
                             input_video_file_name,
                             offload_video_to_cpu=True,
                             offload_state_to_cpu=True,
-                            output_video_path=args.output_fg_path
+                            output_video_path=args.output_fg_path,
+                            start_Frame_idx=start_Frame_idx
                         )
                         
                         # 添加新的边界框
@@ -405,5 +410,6 @@ if __name__ == "__main__":
     parser.add_argument("--save_to_video", default=True, type=bool)
     parser.add_argument("--frame_rate", default=25, type=int)
     parser.add_argument("--target_num", default=2, type=int)
+    parser.add_argument("--start_Frame_idx", default=0, type=int)
     args = parser.parse_args()
     main(args)
