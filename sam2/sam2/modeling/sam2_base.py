@@ -448,11 +448,33 @@ class SAM2Base(torch.nn.Module):
                     y_min, x_min = non_zero_indices.min(dim=0).values
                     y_max, x_max = non_zero_indices.max(dim=0).values
                     high_res_bbox = [x_min.item(), y_min.item(), x_max.item(), y_max.item()]
-                if ious[0][best_iou_inds] > self.stable_ious_threshold:
-                    self.kf_mean, self.kf_covariance = self.kf.update(self.kf_mean, self.kf_covariance, self.kf.xyxy_to_xyah(high_res_bbox))
-                    self.stable_frames += 1
-                else:
-                    self.stable_frames = 0
+                try:
+                    # 获取 IOU 值
+                    iou_values = ious[0][best_iou_inds]
+                    
+                    # 处理多元素张量
+                    if isinstance(iou_values, torch.Tensor):
+                        if iou_values.numel() > 1:
+                            iou_check = iou_values.mean().item()  # 使用平均值
+                        else:
+                            iou_check = iou_values.item()
+                    else:
+                        iou_check = iou_values
+                        
+                    # 比较标量值
+                    if iou_check < self.stable_ious_threshold:
+                        self.stable_frames = 0
+                    else:
+                        self.kf_mean, self.kf_covariance = self.kf.update(
+                            self.kf_mean, 
+                            self.kf_covariance, 
+                            self.kf.xyxy_to_xyah(high_res_bbox)
+                        )
+                        self.stable_frames += 1
+                        
+                except Exception as e:
+                    print(f"处理 IOU 值时出错: {str(e)}")
+                    self.stable_frames = 0  # 出错时重置稳定帧计数
                 if sam_output_tokens.size(1) > 1:
                     sam_output_token = sam_output_tokens[batch_inds, best_iou_inds]
                 self.frame_cnt += 1
@@ -492,10 +514,19 @@ class SAM2Base(torch.nn.Module):
                     }
                 self.frame_cnt += 1
 
-                if ious[0][best_iou_inds] < self.stable_ious_threshold:
+                if ious[0][best_iou_inds].numel() > 1:
+                    iou_check = ious[0][best_iou_inds].mean().item()
+                else:
+                    iou_check = ious[0][best_iou_inds].item()
+                    
+                if iou_check < self.stable_ious_threshold:
                     self.stable_frames = 0
                 else:
-                    self.kf_mean, self.kf_covariance = self.kf.update(self.kf_mean, self.kf_covariance, self.kf.xyxy_to_xyah(high_res_multibboxes[best_iou_inds]))
+                    self.kf_mean, self.kf_covariance = self.kf.update(
+                        self.kf_mean, 
+                        self.kf_covariance, 
+                        self.kf.xyxy_to_xyah(high_res_multibboxes[best_iou_inds])
+                    )
         elif multimask_output and not self.samurai_mode:
             # take the best mask prediction (with the highest IoU estimation)
             best_iou_inds = torch.argmax(ious, dim=-1)
@@ -660,20 +691,62 @@ class SAM2Base(torch.nn.Module):
 
             if self.samurai_mode:
                 valid_indices = [] 
-                if frame_idx > 1:  # Ensure we have previous frames to evaluate
-                    for i in range(frame_idx - 1, 1, -1):  # Iterate backwards through previous frames
-                        iou_score = output_dict["non_cond_frame_outputs"][i]["best_iou_score"]  # Get mask affinity score
-                        obj_score = output_dict["non_cond_frame_outputs"][i]["object_score_logits"]  # Get object score
-                        kf_score = output_dict["non_cond_frame_outputs"][i]["kf_score"] if "kf_score" in output_dict["non_cond_frame_outputs"][i] else None  # Get motion score if available
-                        # Check if the scores meet the criteria for being a valid index
-                        if iou_score.item() > self.memory_bank_iou_threshold and \
-                           obj_score.item() > self.memory_bank_obj_score_threshold and \
-                           (kf_score is None or kf_score.item() > self.memory_bank_kf_score_threshold):
-                            valid_indices.insert(0, i)  
-                        # Check the number of valid indices
-                        if len(valid_indices) >= self.max_obj_ptrs_in_encoder - 1:  
-                            break
-                if frame_idx - 1 not in valid_indices: 
+                if frame_idx > 1:  # 确保我们有前面的帧可以评估
+                    for i in range(frame_idx - 1, 1, -1):  # 从后向前遍历前面的帧
+                        out = output_dict["non_cond_frame_outputs"].get(i, None)
+                        if out is None:
+                            continue
+                            
+                        try:
+                            # 获取分数
+                            iou_score = out["best_iou_score"]  # 获取掩码相似度分数
+                            obj_score = out["object_score_logits"]  # 获取对象分数
+                            kf_score = out.get("kf_score", None)  # 获取运动分数（如果有）
+                            
+                            # 处理张量的情况
+                            if isinstance(iou_score, torch.Tensor):
+                                if iou_score.numel() > 1:
+                                    iou_check = iou_score.mean().item()  # 使用平均值
+                                else:
+                                    iou_check = iou_score.item()
+                            else:
+                                iou_check = iou_score
+                                
+                            if isinstance(obj_score, torch.Tensor):
+                                if obj_score.numel() > 1:
+                                    obj_check = obj_score.mean().item()  # 使用平均值
+                                else:
+                                    obj_check = obj_score.item()
+                            else:
+                                obj_check = obj_score
+                                
+                            if kf_score is not None:
+                                if isinstance(kf_score, torch.Tensor):
+                                    if kf_score.numel() > 1:
+                                        kf_check = kf_score.mean().item()  # 使用平均值
+                                    else:
+                                        kf_check = kf_score.item()
+                                else:
+                                    kf_check = kf_score
+                            else:
+                                kf_check = None
+                                
+                            # 检查分数是否满足条件
+                            if (iou_check > self.memory_bank_iou_threshold and 
+                                obj_check > self.memory_bank_obj_score_threshold and 
+                                (kf_check is None or kf_check > self.memory_bank_kf_score_threshold)):
+                                valid_indices.insert(0, i)
+                                
+                            # 检查有效索引的数量
+                            if len(valid_indices) >= self.max_obj_ptrs_in_encoder - 1:
+                                break
+                                
+                        except Exception as e:
+                            print(f"处理帧 {i} 的分数时出错: {str(e)}")
+                            continue
+                            
+                # 确保包含最近的帧
+                if frame_idx - 1 not in valid_indices and frame_idx > 0:
                     valid_indices.append(frame_idx - 1)
                 for t_pos in range(1, self.num_maskmem):  # Iterate over the number of mask memories
                     idx = t_pos - self.num_maskmem  # Calculate the index for valid indices
